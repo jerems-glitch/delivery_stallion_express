@@ -5,14 +5,18 @@
         <field name="model">delivery.carrier</field>
         <field name="inherit_id" ref="delivery.view_delivery_carrier_form"/>
         <field name="arch" type="xml">
-            <xpath expr="//group[@name='main']" position="inside">
-                <group string="Stallion Express Settings" attrs="{{'invisible': [('delivery_type', '!=', 'stallion_express')]}}">
+
+            <!-- Add fields inside the main settings group -->
+            <xpath expr="//group[@name='general']" position="after">
+                <group string="Stallion Express Settings"
+                       attrs="{'invisible': [('delivery_type', '!=', 'stallion_express')]}">
                     <field name="stallion_customer_number"/>
                     <field name="stallion_api_key" password="True"/>
                     <field name="stallion_endpoint"/>
                     <field name="stallion_default_service"/>
                 </group>
             </xpath>
+
         </field>
     </record>
 </odoo>
