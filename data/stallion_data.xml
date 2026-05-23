@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="delivery_carrier_stallion" model="delivery.carrier">
+        <field name="name">Stallion Express</field>
+        <field name="delivery_type">stallion_express</field>
+        <field name="product_id" ref="delivery.product_product_delivery"/>
+        <field name="stallion_endpoint">https://sandbox.stallionexpress.ca/api/v4</field>
+    </record>
+</odoo>
