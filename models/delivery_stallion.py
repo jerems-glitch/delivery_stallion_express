@@ -6,11 +6,15 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+
 class DeliveryCarrier(models.Model):
     _inherit = 'delivery.carrier'
 
-    delivery_type = fields.Selection(selection_add=[('stallion_express', 'Stallion Express')], string='Provider')
-    
+    delivery_type = fields.Selection(
+        selection_add=[('stallion_express', 'Stallion Express')],
+        ondelete={'stallion_express': 'set default'}  # ← This line fixes the error
+    )
+
     # Stallion credentials
     stallion_customer_number = fields.Char(string='Customer Number')
     stallion_api_key = fields.Char(string='API Key')
@@ -18,8 +22,8 @@ class DeliveryCarrier(models.Model):
         ('https://sandbox.stallionexpress.ca/api/v4', 'Sandbox'),
         ('https://ship.stallionexpress.ca/api/v4', 'Production')
     ], string='API Endpoint', default='https://sandbox.stallionexpress.ca/api/v4')
-    
-    stallion_default_service = fields.Char(string='Default Service Code', help="e.g., 'express', 'priority' etc.")
+
+    stallion_default_service = fields.Char(string='Default Service Code')
 
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_customer_number or not self.stallion_api_key:
