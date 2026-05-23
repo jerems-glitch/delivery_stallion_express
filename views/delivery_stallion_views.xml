@@ -6,10 +6,9 @@
         <field name="inherit_id" ref="delivery.view_delivery_carrier_form"/>
         <field name="arch" type="xml">
 
-            <!-- Add fields inside the main settings group -->
             <xpath expr="//group[@name='general']" position="after">
                 <group string="Stallion Express Settings"
-                       attrs="{'invisible': [('delivery_type', '!=', 'stallion_express')]}">
+                       invisible="delivery_type != 'stallion_express'">
                     <field name="stallion_customer_number"/>
                     <field name="stallion_api_key" password="True"/>
                     <field name="stallion_endpoint"/>
