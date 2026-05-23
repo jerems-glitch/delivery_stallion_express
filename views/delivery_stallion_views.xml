@@ -6,14 +6,20 @@
         <field name="inherit_id" ref="delivery.view_delivery_carrier_form"/>
         <field name="arch" type="xml">
 
-            <xpath expr="//group[@name='general']" position="after">
-                <group string="Stallion Express Settings"
-                       invisible="delivery_type != 'stallion_express'">
-                    <field name="stallion_customer_number"/>
-                    <field name="stallion_api_key" password="True"/>
-                    <field name="stallion_endpoint"/>
-                    <field name="stallion_default_service"/>
-                </group>
+            <!-- Add a new tab for better organization (recommended in Odoo 19) -->
+            <xpath expr="//notebook" position="inside">
+                <page string="Stallion Express" invisible="delivery_type != 'stallion_express'">
+                    <group>
+                        <group>
+                            <field name="stallion_customer_number"/>
+                            <field name="stallion_api_key" password="True"/>
+                        </group>
+                        <group>
+                            <field name="stallion_endpoint"/>
+                            <field name="stallion_default_service"/>
+                        </group>
+                    </group>
+                </page>
             </xpath>
 
         </field>
