@@ -2,8 +2,10 @@ from odoo import models, fields
 import requests
 from odoo.exceptions import UserError
 import logging
+import json
 
 _logger = logging.getLogger(__name__)
+
 
 class DeliveryCarrier(models.Model):
     _inherit = 'delivery.carrier'
@@ -18,28 +20,22 @@ class DeliveryCarrier(models.Model):
     stallion_postage_type_id = fields.Integer(string='Postage Type ID')
 
     def stallion_express_rate_shipment(self, order):
-        """Fetch real-time rates from Stallion Express (multiple options)"""
         if not self.stallion_api_token:
             raise UserError("Stallion Express API Token is not configured.")
 
         shipping_address = order.partner_shipping_id
         company_address = order.company_id.partner_id or order.warehouse_id.partner_id
 
-        if not shipping_address or not company_address:
-            raise UserError("Shipping or warehouse address is missing.")
-
-        # Calculate total weight
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        # Build items
         items = []
         for line in order.order_line:
             if line.product_id and line.product_id.type == 'product':
                 items.append({
-                    'description': line.product_id.name,
+                    'description': line.product_id.name or 'Product',
                     'sku': line.product_id.default_code or '',
                     'quantity': int(line.product_uom_qty),
                     'value': line.price_unit,
@@ -69,7 +65,7 @@ class DeliveryCarrier(models.Model):
             'width': 12,
             'height': 12,
             'size_unit': 'in',
-            'items': items,
+            'items': items or [{}],
             'package_type': 'Parcel',
             'postage_types': [],
             'signature_confirmation': False,
@@ -85,8 +81,14 @@ class DeliveryCarrier(models.Model):
         }
 
         try:
-            _logger.info(f"Calling Stallion Rates: {api_url}")
-            response = requests.post(api_url, json=payload, headers=headers, timeout=25)
+            _logger.info(f"Stallion Request URL: {api_url}")
+            _logger.info(f"Stallion Request Payload: {json.dumps(payload, indent=2)}")
+
+            response = requests.post(api_url, json=payload, headers=headers, timeout=30)
+
+            _logger.info(f"Stallion Response Status: {response.status_code}")
+            _logger.info(f"Stallion Response Body: {response.text}")
+
             response.raise_for_status()
             data = response.json()
 
@@ -94,21 +96,25 @@ class DeliveryCarrier(models.Model):
             for rate in data.get('rates', []):
                 rates.append({
                     'carrier': self.name,
-                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Express',
+                    'service_name': rate.get('service_name') or rate.get(
+                        'name') or f"Stallion {rate.get('postage_type_id')}",
                     'price': float(rate.get('total', 0)),
                     'currency': 'CAD',
                     'service_code': str(rate.get('postage_type_id')),
-                    'delivery_date': rate.get('delivery_days'),
                 })
 
             if not rates:
-                raise UserError("No shipping rates returned from Stallion Express.")
+                raise UserError("No rates returned. Check server logs for details.")
 
             return rates
 
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"HTTP Error {response.status_code}: {response.text}"
+            _logger.error(error_msg)
+            raise UserError(f"Stallion Express Error: {error_msg}")
         except Exception as e:
-            _logger.error(f"Stallion Express API Error: {str(e)}")
-            raise UserError(f"Stallion Express: {str(e)}")
+            _logger.error(f"Unexpected error: {str(e)}")
+            raise UserError(f"Stallion Express Error: {str(e)}")
 
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
