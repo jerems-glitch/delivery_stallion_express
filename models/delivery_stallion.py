@@ -94,7 +94,7 @@ class DeliveryCarrier(models.Model):
             if not rates:
                 return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-            # Find exact match
+            # Find exact match for this carrier
             chosen = None
             if self.stallion_postage_type:
                 for r in rates:
@@ -104,7 +104,7 @@ class DeliveryCarrier(models.Model):
 
             if not chosen:
                 return {'success': False, 'price': 0.0,
-                        'error_message': f'No rate available for {self.stallion_postage_type}'}
+                        'error_message': f'No rate for {self.stallion_postage_type}'}
 
             # === DYNAMIC TRANSIT TIME ===
             delivery_days = chosen.get('delivery_days', '')
