@@ -6,19 +6,22 @@
         <field name="inherit_id" ref="delivery.view_delivery_carrier_form"/>
         <field name="arch" type="xml">
 
-            <!-- Add a new tab for better organization (recommended in Odoo 19) -->
+            <!-- Add a dedicated tab for Stallion Express settings -->
             <xpath expr="//notebook" position="inside">
-                <page string="Stallion Express" invisible="delivery_type != 'stallion_express'">
+                <page string="Stallion Express"
+                      invisible="delivery_type != 'stallion_express'">
                     <group>
-                        <group>
-                            <field name="stallion_customer_number"/>
-                            <field name="stallion_api_key" password="True"/>
-                        </group>
-                        <group>
-                            <field name="stallion_endpoint"/>
-                            <field name="stallion_default_service"/>
+                        <group string="API Configuration">
+                            <field name="stallion_api_token" password="True"/>
+                            <field name="stallion_test_mode"/>
+                            <field name="stallion_postage_type_id"/>
                         </group>
                     </group>
+                    <div class="alert alert-info mt-3" role="alert">
+                        <strong>Note:</strong> This module uses Production endpoint by default
+                        (<code>https://ship.stallionexpress.ca/api/v4/rates</code>).
+                        Enable Test Mode only for sandbox testing.
+                    </div>
                 </page>
             </xpath>
 

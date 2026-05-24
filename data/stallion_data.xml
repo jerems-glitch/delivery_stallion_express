@@ -4,6 +4,6 @@
         <field name="name">Stallion Express</field>
         <field name="delivery_type">stallion_express</field>
         <field name="product_id" ref="delivery.product_product_delivery"/>
-        <field name="stallion_endpoint">https://sandbox.stallionexpress.ca/api/v4</field>
+        <!-- Removed stallion_endpoint - now handled in code based on test mode -->
     </record>
 </odoo>
