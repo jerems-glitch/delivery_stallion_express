@@ -94,7 +94,7 @@ class DeliveryCarrier(models.Model):
             if not rates:
                 return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-            # Find exact match for this carrier
+            # Try to match exact postage type
             chosen = None
             if self.stallion_postage_type:
                 for r in rates:
@@ -106,13 +106,13 @@ class DeliveryCarrier(models.Model):
                 return {'success': False, 'price': 0.0,
                         'error_message': f'No rate for {self.stallion_postage_type}'}
 
-            # === DYNAMIC TRANSIT TIME ===
+            # Update name + transit time dynamically
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
                 new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
                 self.sudo().write({
-                    'last_delivery_days': delivery_days,
-                    'name': new_name
+                    'name': new_name,
+                    'last_delivery_days': delivery_days
                 })
 
             return {
@@ -158,9 +158,5 @@ class DeliveryCarrier(models.Model):
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
-            'params': {
-                'title': 'Success',
-                'message': f"Synced {created} shipping methods",
-                'type': 'success'
-            }
+            'params': {'title': 'Success', 'message': f"Synced {created} methods", 'type': 'success'}
         }
