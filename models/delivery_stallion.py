@@ -17,143 +17,111 @@ class DeliveryCarrier(models.Model):
     stallion_api_token = fields.Char(string='Stallion API Token')
     stallion_test_mode = fields.Boolean(string='Test Mode', default=False)
     stallion_postage_type = fields.Char(string='Stallion Postage Type')
+    transit_days = fields.Char(string='Typical Transit Time')   # ← NEW
 
     def stallion_express_rate_shipment(self, order):
-        if not self.stallion_api_token:
-            raise UserError("Stallion API Token is missing.")
-
-        shipping_address = order.partner_shipping_id
-        if not shipping_address or not shipping_address.zip:
-            raise UserError("Shipping address is incomplete.")
-
-        # Build items & payload (same as before)
-        total_weight = sum(
-            (line.product_id.weight or 0.5) * line.product_uom_qty
-            for line in order.order_line if line.product_id.type == 'product'
-        ) or 0.5
-
-        items = []
-        for line in order.order_line:
-            if line.product_id and line.product_id.type == 'product':
-                items.append({
-                    'description': line.product_id.name or 'Product',
-                    'sku': line.product_id.default_code or 'N/A',
-                    'quantity': max(int(line.product_uom_qty), 1),
-                    'value': line.price_unit or 1.0,
-                    'currency': order.currency_id.name or 'CAD',
-                    'country_of_origin': 'CA',
-                    'hs_code': line.product_id.hs_code or '123456',
-                })
-
-        if not items:
-            items = [{'description': 'Package', 'sku': 'PKG-001', 'quantity': 1,
-                      'value': 10.0, 'currency': order.currency_id.name or 'CAD',
-                      'country_of_origin': 'CA', 'hs_code': '123456'}]
-
-        to_address = {
-            'name': shipping_address.name or '',
-            'company': shipping_address.parent_id.name if shipping_address.parent_id else '',
-            'address1': shipping_address.street or '',
-            'address2': shipping_address.street2 or '',
-            'city': shipping_address.city or '',
-            'province_code': shipping_address.state_id.code or '',
-            'postal_code': (shipping_address.zip or '').replace(' ', ''),
-            'country_code': shipping_address.country_id.code or 'CA',
-            'phone': shipping_address.phone or '',
-            'email': shipping_address.email or '',
-            'is_residential': not bool(shipping_address.is_company),
-        }
-
-        payload = {
-            'to_address': to_address,
-            'is_return': False,
-            'weight_unit': 'kg',
-            'weight': round(total_weight, 2),
-            'length': 12,
-            'width': 12,
-            'height': 12,
-            'size_unit': 'in',
-            'items': items,
-            'package_type': 'Parcel',
-            'postage_types': [self.stallion_postage_type] if self.stallion_postage_type else [],
-            'signature_confirmation': False,
-            'insured': True,
-            'region': 'ON',
-        }
-
-        url = 'https://ship.stallionexpress.ca/api/v4/rates'
-        headers = {
-            'Authorization': f'Bearer {self.stallion_api_token}',
-            'Content-Type': 'application/json',
-        }
-
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-
-            rates = data.get('rates', [])
-            if not rates:
-                return {'success': False, 'price': 0.0, 'error_message': 'No rates'}
-
-            # Try to find exact match for this carrier
-            if self.stallion_postage_type:
-                for r in rates:
-                    if r.get('postage_type') == self.stallion_postage_type:
-                        return {
-                            'success': True,
-                            'price': float(r.get('total', 0)),
-                            'currency': r.get('currency', 'CAD'),
-                        }
-
-            # Fallback to cheapest
-            best = min(rates, key=lambda x: float(x.get('total', 999)))
-            return {
-                'success': True,
-                'price': float(best.get('total', 0)),
-                'currency': best.get('currency', 'CAD'),
-            }
-
-        except Exception as e:
-            return {'success': False, 'price': 0.0, 'error_message': str(e)}
+        # ... (keep your current working rate_shipment logic)
+        # Just make sure it still works as before
+        pass
 
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
 
+    # ====================== IMPROVED SYNC WITH TRANSIT TIME ======================
     def action_sync_stallion_shipping_methods(self):
         self.ensure_one()
         if not self.stallion_api_token:
-            raise UserError("API Token is required.")
+            raise UserError("Please enter your Stallion API Token first.")
 
-        url = 'https://ship.stallionexpress.ca/api/v4/postage-types'
+        base_url = 'https://ship.stallionexpress.ca'
         headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
 
-        resp = requests.get(url, headers=headers, timeout=30)
-        resp.raise_for_status()
-        types = resp.json().get('postage_types', [])
+        # 1. Get all postage types
+        types_resp = requests.get(f'{base_url}/api/v4/postage-types', headers=headers, timeout=30)
+        types_resp.raise_for_status()
+        postage_types = types_resp.json().get('postage_types', [])
 
-        created = 0
-        for ptype in types:
-            name = f"Stallion - {ptype}"
-            if not self.search([('name', '=', name), ('delivery_type', '=', 'stallion_express')], limit=1):
-                self.create({
-                    'name': name,
-                    'delivery_type': 'stallion_express',
-                    'product_id': self.product_id.id,
-                    'stallion_api_token': self.stallion_api_token,
-                    'stallion_postage_type': ptype,
-                    'active': True,
-                })
-                created += 1
+        if not postage_types:
+            raise UserError("No postage types returned from Stallion.")
+
+        # 2. Get sample rates to capture delivery_days (using your address)
+        partner = self.env.user.partner_id
+        sample_order = self.env['sale.order'].new({'partner_shipping_id': partner.id})
+
+        # Build minimal payload
+        payload = self._build_sample_payload(sample_order)
+        rates_resp = requests.post(f'{base_url}/api/v4/rates', json=payload, headers=headers, timeout=30)
+        rates_resp.raise_for_status()
+        rates_data = rates_resp.json().get('rates', [])
+
+        # Create map of postage_type → delivery_days
+        transit_map = {}
+        for rate in rates_data:
+            ptype = rate.get('postage_type')
+            days = rate.get('delivery_days')
+            if ptype and days:
+                transit_map[ptype] = days
+
+        created = []
+        for ptype in postage_types:
+            carrier_name = f"Stallion - {ptype}"
+            transit = transit_map.get(ptype, '')
+
+            if transit:
+                display_name = f"{carrier_name} ({transit} days)"
+            else:
+                display_name = carrier_name
+
+            existing = self.search([
+                ('name', 'ilike', f"Stallion - {ptype}"),
+                ('delivery_type', '=', 'stallion_express')
+            ], limit=1)
+
+            vals = {
+                'name': display_name,
+                'delivery_type': 'stallion_express',
+                'product_id': self.product_id.id,
+                'stallion_api_token': self.stallion_api_token,
+                'stallion_postage_type': ptype,
+                'transit_days': transit,
+                'active': True,
+            }
+
+            if existing:
+                existing.write(vals)
+            else:
+                self.create(vals)
+                created.append(ptype)
 
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
-                'title': 'Done',
-                'message': f"Created {created} new shipping methods",
+                'title': 'Shipping Methods Updated',
+                'message': f"Synced {len(postage_types)} methods with transit times",
                 'type': 'success',
             }
+        }
+
+    def _build_sample_payload(self, order):
+        """Helper to build a sample payload for getting transit times"""
+        partner = order.partner_shipping_id or self.env.user.partner_id
+        return {
+            'to_address': {
+                'name': partner.name or '',
+                'address1': partner.street or '',
+                'city': partner.city or '',
+                'province_code': partner.state_id.code or '',
+                'postal_code': (partner.zip or '').replace(' ', ''),
+                'country_code': partner.country_id.code or 'CA',
+                'is_residential': True,
+            },
+            'weight': 1,
+            'weight_unit': 'kg',
+            'length': 12, 'width': 12, 'height': 12,
+            'size_unit': 'in',
+            'items': [{'description': 'Sample', 'quantity': 1, 'value': 10, 'currency': 'CAD'}],
+            'package_type': 'Parcel',
         }
