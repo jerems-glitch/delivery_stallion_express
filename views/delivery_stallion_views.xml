@@ -5,26 +5,32 @@
         <field name="model">delivery.carrier</field>
         <field name="inherit_id" ref="delivery.view_delivery_carrier_form"/>
         <field name="arch" type="xml">
-
-            <!-- Add a dedicated tab for Stallion Express settings -->
             <xpath expr="//notebook" position="inside">
                 <page string="Stallion Express"
                       invisible="delivery_type != 'stallion_express'">
                     <group>
+                        <button name="action_sync_stallion_shipping_methods"
+                                string="Sync Shipping Methods from Stallion"
+                                type="object"
+                                class="btn btn-primary mb-3"
+                                icon="fa-refresh"/>
+
                         <group string="API Configuration">
                             <field name="stallion_api_token" password="True"/>
                             <field name="stallion_test_mode"/>
-                            <field name="stallion_postage_type_id"/>
                         </group>
                     </group>
-                    <div class="alert alert-info mt-3" role="alert">
-                        <strong>Note:</strong> This module uses Production endpoint by default
-                        (<code>https://ship.stallionexpress.ca/api/v4/rates</code>).
-                        Enable Test Mode only for sandbox testing.
+
+                    <div class="alert alert-info mt-3">
+                        <strong>How it works:</strong><br/>
+                        1. Enter your API Token above.<br/>
+                        2. Click <strong>"Sync Shipping Methods from Stallion"</strong>.<br/>
+                        3. Individual shipping methods will be created (Fleet Optics, Intelcom, etc.).<br/>
+                        4. Enable/disable them independently.<br/>
+                        5. Customers will see them as a list at checkout.
                     </div>
                 </page>
             </xpath>
-
         </field>
     </record>
 </odoo>

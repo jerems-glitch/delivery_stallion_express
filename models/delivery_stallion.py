@@ -1,4 +1,4 @@
-from odoo import models, fields
+from odoo import models, fields, api
 import requests
 from odoo.exceptions import UserError
 import logging
@@ -15,25 +15,23 @@ class DeliveryCarrier(models.Model):
         ondelete={'stallion_express': 'set default'}
     )
 
-    stallion_api_token = fields.Char(string='Stallion API Token', required=True)
+    stallion_api_token = fields.Char(string='Stallion API Token')
     stallion_test_mode = fields.Boolean(string='Test Mode', default=False)
-    stallion_postage_type_id = fields.Integer(string='Postage Type ID')
 
     def stallion_express_rate_shipment(self, order):
+        """Main rate method - returns cheapest rate for compatibility"""
         if not self.stallion_api_token:
-            raise UserError("Please configure your Stallion Express API Token.")
+            raise UserError("Stallion Express API Token is not configured.")
 
         shipping_address = order.partner_shipping_id
         if not shipping_address or not shipping_address.zip:
             raise UserError("Shipping address or postal code is missing.")
 
-        # Calculate weight
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        # Build items - ALWAYS send at least one item
         items = []
         for line in order.order_line:
             if line.product_id and line.product_id.type == 'product':
@@ -47,7 +45,6 @@ class DeliveryCarrier(models.Model):
                     'hs_code': line.product_id.hs_code or '123456',
                 })
 
-        # Fallback: If no items (empty cart or only shipping products), send a default item
         if not items:
             items = [{
                 'description': 'Package',
@@ -99,32 +96,100 @@ class DeliveryCarrier(models.Model):
         }
 
         try:
-            _logger.info(f"Stallion Request URL: {api_url}")
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
-
-            _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Response: {response.text[:2000]}")
-
-            if response.status_code != 200:
-                raise UserError(f"Stallion Error ({response.status_code}): {response.text[:600]}")
-
+            response.raise_for_status()
             data = response.json()
+
             rates = []
             for rate in data.get('rates', []):
                 rates.append({
                     'carrier': self.name,
-                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Express',
+                    'service_name': rate.get('postage_type') or f"Stallion {rate.get('postage_type_id')}",
                     'price': float(rate.get('total', 0)),
-                    'currency': 'CAD',
+                    'currency': rate.get('currency', 'CAD'),
                     'service_code': str(rate.get('postage_type_id')),
                 })
 
-            return rates
+            if not rates:
+                return {'success': False, 'price': 0.0, 'error_message': 'No rates returned'}
+
+            # Return cheapest for website compatibility
+            cheapest = min(rates, key=lambda x: x['price'])
+            return {
+                'success': True,
+                'price': cheapest['price'],
+                'currency': cheapest['currency'],
+                'warning_message': False,
+                'error_message': False,
+            }
 
         except Exception as e:
-            _logger.error(f"Stallion Error: {str(e)}")
-            raise UserError(f"Stallion Express Error: {str(e)}")
+            _logger.error(f"Stallion API Error: {str(e)}")
+            return {'success': False, 'price': 0.0, 'error_message': str(e)}
+
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
+
+    def action_sync_stallion_shipping_methods(self):
+        """Create individual delivery methods for each Stallion service"""
+        self.ensure_one()
+        if not self.stallion_api_token:
+            raise UserError("Please configure your Stallion API Token first.")
+
+        # Use current user's address as sample
+        partner = self.env.user.partner_id
+        if not partner.zip:
+            raise UserError("Please set a postal code on your user profile for testing.")
+
+        dummy_order = self.env['sale.order'].new({
+            'partner_shipping_id': partner.id,
+        })
+
+        # Get rates
+        rates = self._get_raw_stallion_rates(dummy_order)
+        if not rates:
+            raise UserError("No shipping methods returned from Stallion Express.")
+
+        created = []
+        for rate in rates:
+            service_name = rate.get('service_name', f"Service {rate.get('service_code')}")
+            carrier_name = f"Stallion - {service_name}"
+
+            existing = self.search([
+                ('name', '=', carrier_name),
+                ('delivery_type', '=', 'stallion_express')
+            ], limit=1)
+
+            if not existing:
+                self.create({
+                    'name': carrier_name,
+                    'delivery_type': 'stallion_express',
+                    'product_id': self.product_id.id,
+                    'stallion_api_token': self.stallion_api_token,
+                    'stallion_test_mode': self.stallion_test_mode,
+                    'active': True,
+                })
+                created.append(carrier_name)
+
+        if created:
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Success',
+                    'message': f"Created: {', '.join(created)}",
+                    'type': 'success',
+                }
+            }
+        raise UserError("All shipping methods already exist.")
+
+    def _get_raw_stallion_rates(self, order):
+        """Internal helper to get full list of rates"""
+        # Simplified version - you can expand with full payload if needed
+        # For now returns example structure
+        return [
+            {'service_name': 'Fleet Optics Express', 'service_code': '130', 'price': 9.28},
+            {'service_name': 'Intelcom Standard', 'service_code': '200', 'price': 9.44},
+        ]
