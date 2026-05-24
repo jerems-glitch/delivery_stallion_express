@@ -19,11 +19,11 @@ class DeliveryCarrier(models.Model):
     stallion_postage_type = fields.Char(string='Stallion Postage Type')
     last_delivery_days = fields.Char(string='Last Transit Time', readonly=True)
 
-    # Volume / Package Support
+    # Package Type Support (Volume + Dimensional Weight)
     default_package_type_id = fields.Many2one(
         'stock.package.type',
         string='Default Package Type',
-        help="Will be used for dimensional weight calculation"
+        help="Used for real dimensional weight calculation"
     )
 
     def stallion_express_rate_shipment(self, order):
@@ -34,19 +34,19 @@ class DeliveryCarrier(models.Model):
         if not shipping_address or not shipping_address.zip:
             raise UserError("Shipping address is incomplete.")
 
-        # Calculate total weight and volume
+        # === Weight & Volume Calculation ===
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        # Use selected package type dimensions
+        # === Get dimensions from selected Package Type (safe access) ===
         if self.default_package_type_id:
             pkg = self.default_package_type_id
-            length = pkg.length or 12
-            width = pkg.width or 12
-            height = pkg.height or 12
-            size_unit = 'cm' if pkg.length_uom_id and pkg.length_uom_id.name == 'cm' else 'in'
+            length = getattr(pkg, 'length', 12) or 12
+            width  = getattr(pkg, 'width', 12) or 12
+            height = getattr(pkg, 'height', 12) or 12
+            size_unit = 'cm' if getattr(pkg, 'length_uom_id', False) and pkg.length_uom_id.name == 'cm' else 'in'
         else:
             length = width = height = 12
             size_unit = 'in'
@@ -123,9 +123,10 @@ class DeliveryCarrier(models.Model):
                         break
 
             if not chosen:
-                return {'success': False, 'price': 0.0, 'error_message': f'No rate for {self.stallion_postage_type}'}
+                return {'success': False, 'price': 0.0,
+                        'error_message': f'No rate for {self.stallion_postage_type}'}
 
-            # Dynamic transit time in name
+            # Dynamic transit time
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
                 new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
@@ -177,9 +178,5 @@ class DeliveryCarrier(models.Model):
         return {
             'type': 'ir.actions.client',
             'tag': 'display_notification',
-            'params': {
-                'title': 'Success',
-                'message': f"Synced {created} shipping methods",
-                'type': 'success'
-            }
+            'params': {'title': 'Success', 'message': f"Synced {created} methods", 'type': 'success'}
         }
