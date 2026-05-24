@@ -19,6 +19,13 @@ class DeliveryCarrier(models.Model):
     stallion_postage_type = fields.Char(string='Stallion Postage Type')
     last_delivery_days = fields.Char(string='Last Transit Time', readonly=True)
 
+    # === Package Type Support ===
+    default_package_type_id = fields.Many2one(
+        'stock.package.type',
+        string='Default Package Type',
+        help="Used for dimensional weight and multi-package calculation"
+    )
+
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
             raise UserError("Stallion API Token is missing.")
@@ -27,10 +34,33 @@ class DeliveryCarrier(models.Model):
         if not shipping_address or not shipping_address.zip:
             raise UserError("Shipping address is incomplete.")
 
-        total_weight = sum(
-            (line.product_id.weight or 0.5) * line.product_uom_qty
-            for line in order.order_line if line.product_id.type == 'product'
-        ) or 0.5
+        # === Calculate Weight + Volume ===
+        total_weight = 0.0
+        total_volume = 0.0
+
+        for line in order.order_line:
+            if line.product_id and line.product_id.type == 'product':
+                qty = line.product_uom_qty
+                total_weight += (line.product_id.weight or 0.5) * qty
+                total_volume += (line.product_id.volume or 0.0) * qty
+
+        if total_weight == 0:
+            total_weight = 0.5
+
+        # === Determine Package Dimensions ===
+        length = width = height = 12.0
+        size_unit = 'in'
+
+        if self.default_package_type_id:
+            pkg = self.default_package_type_id
+            length = pkg.length or 12
+            width = pkg.width or 12
+            height = pkg.height or 12
+            size_unit = pkg.length_uom_id and pkg.length_uom_id.name == 'cm' and 'cm' or 'in'
+
+        # Fallback if volume is very high → suggest bigger package
+        if total_volume > 5000:  # rough threshold in cm³
+            length, width, height = max(length, 18), max(width, 18), max(height, 18)
 
         items = []
         for line in order.order_line:
@@ -69,8 +99,10 @@ class DeliveryCarrier(models.Model):
             'is_return': False,
             'weight_unit': 'kg',
             'weight': round(total_weight, 2),
-            'length': 12, 'width': 12, 'height': 12,
-            'size_unit': 'in',
+            'length': length,
+            'width': width,
+            'height': height,
+            'size_unit': size_unit,
             'items': items,
             'package_type': 'Parcel',
             'postage_types': [self.stallion_postage_type] if self.stallion_postage_type else [],
@@ -94,7 +126,6 @@ class DeliveryCarrier(models.Model):
             if not rates:
                 return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-            # Try to match exact postage type
             chosen = None
             if self.stallion_postage_type:
                 for r in rates:
@@ -106,7 +137,6 @@ class DeliveryCarrier(models.Model):
                 return {'success': False, 'price': 0.0,
                         'error_message': f'No rate for {self.stallion_postage_type}'}
 
-            # Update name + transit time dynamically
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
                 new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
@@ -128,35 +158,3 @@ class DeliveryCarrier(models.Model):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
-
-    def action_sync_stallion_shipping_methods(self):
-        self.ensure_one()
-        if not self.stallion_api_token:
-            raise UserError("API Token is required.")
-
-        base_url = 'https://ship.stallionexpress.ca'
-        headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
-
-        t = requests.get(f'{base_url}/api/v4/postage-types', headers=headers, timeout=30)
-        t.raise_for_status()
-        postage_types = t.json().get('postage_types', [])
-
-        created = 0
-        for ptype in postage_types:
-            name = f"Stallion - {ptype}"
-            if not self.search([('name', '=', name)], limit=1):
-                self.create({
-                    'name': name,
-                    'delivery_type': 'stallion_express',
-                    'product_id': self.product_id.id,
-                    'stallion_api_token': self.stallion_api_token,
-                    'stallion_postage_type': ptype,
-                    'active': True,
-                })
-                created += 1
-
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {'title': 'Success', 'message': f"Synced {created} methods", 'type': 'success'}
-        }

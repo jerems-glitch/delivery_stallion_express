@@ -14,7 +14,9 @@
                                 type="object"
                                 class="btn btn-primary mb-3"
                                 icon="fa-refresh"/>
-
+                        <group string="Package Settings">
+                            <field name="default_package_type_id"/>
+                        </group>
                         <group string="API Configuration">
                             <field name="stallion_api_token" password="True"/>
                             <field name="stallion_test_mode"/>
