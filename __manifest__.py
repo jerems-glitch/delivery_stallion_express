@@ -16,6 +16,5 @@
     'data': [
         'data/stallion_data.xml',
         'views/delivery_stallion_views.xml',
-        'views/delivery_checkout_views.xml',
     ],
 }
