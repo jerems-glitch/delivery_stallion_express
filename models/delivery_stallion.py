@@ -16,7 +16,7 @@ class DeliveryCarrier(models.Model):
     )
 
     stallion_api_token = fields.Char(string='Stallion API Token', required=True)
-    stallion_test_mode = fields.Boolean(string='Test Mode', default=True)
+    stallion_test_mode = fields.Boolean(string='Test Mode', default=False)  # Default to Production
 
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
@@ -65,15 +65,11 @@ class DeliveryCarrier(models.Model):
             'package_type': 'Parcel',
             'postage_types': [],
             'signature_confirmation': False,
-            'insured': False,
+            'insured': True,
+            'region': 'ON',  # Added from your old code
         }
 
-        # Correct endpoints from your screenshot
-        if self.stallion_test_mode:
-            base_url = 'https://sandbox.stallion.ca'
-        else:
-            base_url = 'https://ship.stallionexpress.ca'
-
+        base_url = 'https://ship.stallionexpress.ca' if not self.stallion_test_mode else 'https://sandbox.stallion.ca'
         api_url = f'{base_url}/api/v4/rates'
 
         headers = {
@@ -89,7 +85,7 @@ class DeliveryCarrier(models.Model):
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Response Body:\n{response.text[:4000]}")
+            _logger.info(f"Stallion Response Body:\n{response.text[:5000]}")  # Increased limit
 
             response.raise_for_status()
             data = response.json()
@@ -104,17 +100,14 @@ class DeliveryCarrier(models.Model):
                     'service_code': str(rate.get('postage_type_id')),
                 })
 
-            if not rates:
-                raise UserError("No shipping rates returned from Stallion Express.")
-
             return rates
 
         except requests.exceptions.HTTPError as e:
-            error_msg = response.text if 'response' in locals() else str(e)
-            _logger.error(f"Stallion Error: {error_msg}")
-            raise UserError(f"Stallion Express Error ({response.status_code}): {error_msg[:500]}")
+            error_detail = response.text if 'response' in locals() else str(e)
+            _logger.error(f"Stallion 422 Error: {error_detail}")
+            raise UserError(f"Stallion Express Error (422): {error_detail[:600]}")
         except Exception as e:
-            _logger.error(f"Stallion Exception: {str(e)}")
+            _logger.error(f"Stallion Error: {str(e)}")
             raise UserError(f"Stallion Express Error: {str(e)}")
 
     def rate_shipment(self, order):
