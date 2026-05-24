@@ -30,20 +30,17 @@ class DeliveryCarrier(models.Model):
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        items = []
-        for line in order.order_line:
-            if line.product_id and line.product_id.type == 'product':
-                items.append({
-                    'description': line.product_id.name or 'Product',
-                    'sku': line.product_id.default_code or 'N/A',
-                    'quantity': int(line.product_uom_qty),
-                    'value': line.price_unit,
-                    'currency': order.currency_id.name or 'CAD',
-                })
+        items = [{
+            'description': line.product_id.name or 'Product',
+            'sku': line.product_id.default_code or 'N/A',
+            'quantity': int(line.product_uom_qty),
+            'value': line.price_unit,
+            'currency': order.currency_id.name or 'CAD',
+        } for line in order.order_line if line.product_id and line.product_id.type == 'product']
 
         to_address = {
             'name': shipping_address.name or '',
-            'company': shipping_address.parent_id.name if shipping_address.parent_id else shipping_address.name,
+            'company': shipping_address.parent_id.name if shipping_address.parent_id else '',
             'address1': shipping_address.street or '',
             'address2': shipping_address.street2 or '',
             'city': shipping_address.city or '',
@@ -80,37 +77,40 @@ class DeliveryCarrier(models.Model):
         }
 
         try:
-            _logger.info("=" * 80)
+            _logger.info("=" * 100)
             _logger.info(f"Stallion Request URL: {api_url}")
             _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
 
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Response Body:\n{response.text}")
+            _logger.info(f"Stallion Full Response:\n{response.text[:2000]}")  # limit size
 
             response.raise_for_status()
             data = response.json()
 
-            # ... (rate parsing)
             rates = []
             for rate in data.get('rates', []):
                 rates.append({
                     'carrier': self.name,
-                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Service',
-                    'price': float(rate.get('total', 0)),
+                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Express',
+                    'price': float(rate.get('total', rate.get('price', 0))),
                     'currency': 'CAD',
                     'service_code': str(rate.get('postage_type_id')),
                 })
 
-            return rates or [{'carrier': self.name, 'service_name': 'Default Rate', 'price': 15.0, 'currency': 'CAD'}]
+            if not rates:
+                _logger.warning("Stallion returned no rates")
+                return []
+
+            return rates
 
         except requests.exceptions.HTTPError as e:
-            error_detail = response.text if 'response' in locals() else str(e)
-            _logger.error(f"Stallion 422 Error Details: {error_detail}")
-            raise UserError(f"Stallion Express Error (422): {error_detail[:500]}")
+            error_msg = f"Status {response.status_code}: {response.text[:1000]}"
+            _logger.error(f"Stallion HTTP Error: {error_msg}")
+            raise UserError(f"Stallion Error: {error_msg}")
         except Exception as e:
-            _logger.error(f"Stallion Error: {str(e)}")
+            _logger.error(f"Stallion Exception: {str(e)}")
             raise UserError(f"Stallion Express Error: {str(e)}")
 
     def rate_shipment(self, order):
