@@ -61,14 +61,19 @@ class DeliveryCarrier(models.Model):
             'width': 12,
             'height': 12,
             'size_unit': 'in',
-            'items': items,
+            'items': items or [{}],
             'package_type': 'Parcel',
             'postage_types': [],
             'signature_confirmation': False,
             'insured': False,
         }
 
-        base_url = 'https://sandbox.stallionexpress.ca' if self.stallion_test_mode else 'https://ship.stallionexpress.ca'
+        # Correct endpoints from your screenshot
+        if self.stallion_test_mode:
+            base_url = 'https://sandbox.stallion.ca'
+        else:
+            base_url = 'https://ship.stallionexpress.ca'
+
         api_url = f'{base_url}/api/v4/rates'
 
         headers = {
@@ -84,7 +89,7 @@ class DeliveryCarrier(models.Model):
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Full Response:\n{response.text[:2000]}")  # limit size
+            _logger.info(f"Stallion Response Body:\n{response.text[:4000]}")
 
             response.raise_for_status()
             data = response.json()
@@ -100,15 +105,14 @@ class DeliveryCarrier(models.Model):
                 })
 
             if not rates:
-                _logger.warning("Stallion returned no rates")
-                return []
+                raise UserError("No shipping rates returned from Stallion Express.")
 
             return rates
 
         except requests.exceptions.HTTPError as e:
-            error_msg = f"Status {response.status_code}: {response.text[:1000]}"
-            _logger.error(f"Stallion HTTP Error: {error_msg}")
-            raise UserError(f"Stallion Error: {error_msg}")
+            error_msg = response.text if 'response' in locals() else str(e)
+            _logger.error(f"Stallion Error: {error_msg}")
+            raise UserError(f"Stallion Express Error ({response.status_code}): {error_msg[:500]}")
         except Exception as e:
             _logger.error(f"Stallion Exception: {str(e)}")
             raise UserError(f"Stallion Express Error: {str(e)}")
