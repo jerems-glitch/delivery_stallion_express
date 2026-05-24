@@ -16,8 +16,9 @@ class DeliveryCarrier(models.Model):
 
     stallion_api_token = fields.Char(string='Stallion API Token')
     stallion_test_mode = fields.Boolean(string='Test Mode', default=False)
+    stallion_postage_type = fields.Char(string='Stallion Postage Type')  # ← NEW FIELD
 
-    # ====================== RATE SHIPMENT (for checkout) ======================
+    # ====================== RATE SHIPMENT ======================
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
             raise UserError("Stallion Express API Token is not configured.")
@@ -80,7 +81,7 @@ class DeliveryCarrier(models.Model):
             'size_unit': 'in',
             'items': items,
             'package_type': 'Parcel',
-            'postage_types': [],
+            'postage_types': [self.stallion_postage_type] if self.stallion_postage_type else [],
             'signature_confirmation': False,
             'insured': True,
             'region': 'ON',
@@ -99,30 +100,34 @@ class DeliveryCarrier(models.Model):
             response.raise_for_status()
             data = response.json()
 
-            rates = []
-            for rate in data.get('rates', []):
-                rates.append({
-                    'carrier': self.name,
-                    'service_name': rate.get('postage_type') or f"Stallion {rate.get('postage_type_id')}",
-                    'price': float(rate.get('total', 0)),
-                    'currency': rate.get('currency', 'CAD'),
-                    'service_code': str(rate.get('postage_type_id')),
-                })
-
+            rates = data.get('rates', [])
             if not rates:
-                return {'success': False, 'price': 0.0, 'error_message': 'No rates returned from Stallion'}
+                return {'success': False, 'price': 0.0, 'error_message': 'No rates returned'}
 
-            cheapest = min(rates, key=lambda x: x['price'])
+            # If this carrier has a specific postage type, try to match it
+            if self.stallion_postage_type:
+                for rate in rates:
+                    if rate.get('postage_type') == self.stallion_postage_type:
+                        return {
+                            'success': True,
+                            'price': float(rate.get('total', 0)),
+                            'currency': rate.get('currency', 'CAD'),
+                            'warning_message': False,
+                            'error_message': False,
+                        }
+
+            # Fallback: return cheapest
+            cheapest = min(rates, key=lambda x: float(x.get('total', 0)))
             return {
                 'success': True,
-                'price': cheapest['price'],
-                'currency': cheapest['currency'],
+                'price': float(cheapest.get('total', 0)),
+                'currency': cheapest.get('currency', 'CAD'),
                 'warning_message': False,
                 'error_message': False,
             }
 
         except Exception as e:
-            _logger.error(f"Stallion API Error: {str(e)}")
+            _logger.error(f"Stallion Error: {str(e)}")
             return {'success': False, 'price': 0.0, 'error_message': str(e)}
 
     def rate_shipment(self, order):
@@ -130,28 +135,20 @@ class DeliveryCarrier(models.Model):
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
 
-    # ====================== SYNC SHIPPING METHODS ======================
+    # ====================== SYNC BUTTON ======================
     def action_sync_stallion_shipping_methods(self):
-        """Fetch all postage types from Stallion and create delivery methods"""
         self.ensure_one()
         if not self.stallion_api_token:
             raise UserError("Please enter your Stallion API Token first.")
 
-        base_url = 'https://ship.stallionexpress.ca'
-        url = f'{base_url}/api/v4/postage-types'
-
-        headers = {
-            'Authorization': f'Bearer {self.stallion_api_token}',
-        }
+        url = 'https://ship.stallionexpress.ca/api/v4/postage-types'
+        headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
 
         try:
             response = requests.get(url, headers=headers, timeout=30)
             response.raise_for_status()
             data = response.json()
-
             postage_types = data.get('postage_types', [])
-            if not postage_types:
-                raise UserError("No postage types returned from Stallion Express.")
 
             created = []
             for ptype in postage_types:
@@ -169,6 +166,7 @@ class DeliveryCarrier(models.Model):
                         'product_id': self.product_id.id,
                         'stallion_api_token': self.stallion_api_token,
                         'stallion_test_mode': self.stallion_test_mode,
+                        'stallion_postage_type': ptype,           # ← Save the exact type
                         'active': True,
                     })
                     created.append(ptype)
@@ -178,14 +176,12 @@ class DeliveryCarrier(models.Model):
                     'type': 'ir.actions.client',
                     'tag': 'display_notification',
                     'params': {
-                        'title': 'Shipping Methods Synced',
-                        'message': f"Created {len(created)} new methods: {', '.join(created[:5])}{'...' if len(created) > 5 else ''}",
+                        'title': 'Success',
+                        'message': f"Created {len(created)} shipping methods",
                         'type': 'success',
                     }
                 }
-            else:
-                raise UserError("All postage types already exist as delivery methods.")
+            raise UserError("All methods already exist.")
 
         except Exception as e:
-            _logger.error(f"Stallion Sync Error: {str(e)}")
-            raise UserError(f"Failed to sync shipping methods: {str(e)}")
+            raise UserError(f"Sync failed: {str(e)}")
