@@ -17,7 +17,7 @@ class DeliveryCarrier(models.Model):
     stallion_api_token = fields.Char(string='Stallion API Token')
     stallion_test_mode = fields.Boolean(string='Test Mode', default=False)
     stallion_postage_type = fields.Char(string='Stallion Postage Type')
-    last_delivery_days = fields.Char(string='Transit Time', readonly=True)
+    last_delivery_days = fields.Char(string='Last Transit Time', readonly=True)
 
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
@@ -94,7 +94,7 @@ class DeliveryCarrier(models.Model):
             if not rates:
                 return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-            # Find exact match for this carrier
+            # Find exact match
             chosen = None
             if self.stallion_postage_type:
                 for r in rates:
@@ -104,11 +104,16 @@ class DeliveryCarrier(models.Model):
 
             if not chosen:
                 return {'success': False, 'price': 0.0,
-                        'error_message': f'No rate for {self.stallion_postage_type}'}
+                        'error_message': f'No rate available for {self.stallion_postage_type}'}
 
-            # Save dynamic transit time
-            if chosen.get('delivery_days'):
-                self.sudo().write({'last_delivery_days': chosen['delivery_days']})
+            # === DYNAMIC TRANSIT TIME ===
+            delivery_days = chosen.get('delivery_days', '')
+            if delivery_days:
+                new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
+                self.sudo().write({
+                    'last_delivery_days': delivery_days,
+                    'name': new_name
+                })
 
             return {
                 'success': True,
@@ -132,7 +137,6 @@ class DeliveryCarrier(models.Model):
         base_url = 'https://ship.stallionexpress.ca'
         headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
 
-        # Get all postage types
         t = requests.get(f'{base_url}/api/v4/postage-types', headers=headers, timeout=30)
         t.raise_for_status()
         postage_types = t.json().get('postage_types', [])
