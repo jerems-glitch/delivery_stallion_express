@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Show dynamic transit time beside delivery method name -->
+
     <template id="delivery_carrier_selection_inherit_stallion"
               inherit_id="website_sale.delivery_carrier_selection"
-              name="Stallion - Show Transit Time">
+              name="Stallion Express - Show Transit Time">
 
         <xpath expr="//t[@t-foreach='deliveries']//span[hasclass('o_delivery_carrier')]"
                position="after">
@@ -15,4 +15,5 @@
         </xpath>
 
     </template>
+
 </odoo>
