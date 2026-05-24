@@ -1,4 +1,4 @@
-from odoo import models, fields, api
+from odoo import models, fields
 import requests
 from odoo.exceptions import UserError
 import logging
@@ -30,34 +30,65 @@ class DeliveryCarrier(models.Model):
         shipper = order.warehouse_id.partner_id
         recipient = order.partner_shipping_id
 
+        # Build packages (improve this later with real dimensions)
+        packages = []
+        for line in order.order_line.filtered(lambda l: l.product_id.type == 'product'):
+            weight = max(line.product_id.weight or 0.5, 0.1)
+            packages.append({
+                "weight": weight,
+                "length": 10,
+                "width": 10,
+                "height": 10,
+            })
+
         payload = {
             "origin_postal_code": shipper.zip or "",
             "destination_postal_code": recipient.zip or "",
             "destination_country": recipient.country_id.code or "CA",
-            "packages": [{"weight": 1.0, "length": 10, "width": 10, "height": 10}],  # Improve later
+            "packages": packages or [{"weight": 1.0, "length": 10, "width": 10, "height": 10}],
         }
 
         headers = {
             'Content-Type': 'application/json',
             'X-Customer-Number': self.stallion_customer_number,
-            'Authorization': self.stallion_api_key,  # Most common format
+            'Authorization': self.stallion_api_key,
         }
 
         try:
-            url = f"{self.stallion_endpoint}/rates"
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            response.raise_for_status()
-            data = response.json()
+            # Try multiple possible endpoints
+            possible_endpoints = [
+                f"{self.stallion_endpoint}/shipments/rates",
+                f"{self.stallion_endpoint}/rates",
+                f"{self.stallion_endpoint}/quote",
+            ]
+
+            for url in possible_endpoints:
+                response = requests.post(url, headers=headers, json=payload, timeout=20)
+                if response.status_code == 200:
+                    data = response.json()
+                    break
+                elif response.status_code == 404:
+                    continue
+                else:
+                    response.raise_for_status()
+            else:
+                raise UserError("Could not find valid rates endpoint. Please contact support.")
 
             rates = []
-            for service in data.get('services', data.get('rates', [])):
+            services = data.get('services', data.get('rates', data.get('data', [])))
+            for service in services:
                 rates.append({
                     'carrier': self.name,
-                    'service_name': service.get('name') or service.get('service_name'),
-                    'price': float(service.get('total', 0) or service.get('price', 0)),
+                    'service_name': service.get('name') or service.get('service_name') or service.get('title'),
+                    'price': float(service.get('total', 0) or service.get('price', 0) or service.get('cost', 0)),
                     'currency': 'CAD',
-                    'service_code': service.get('code'),
+                    'service_code': service.get('code') or service.get('service_code'),
+                    'delivery_date': service.get('estimated_delivery'),
                 })
+
+            if not rates:
+                raise UserError("No shipping rates returned from Stallion Express.")
+
             return rates
 
         except Exception as e:
