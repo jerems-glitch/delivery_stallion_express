@@ -5,7 +5,6 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
-
 class DeliveryCarrier(models.Model):
     _inherit = 'delivery.carrier'
 
@@ -14,92 +13,102 @@ class DeliveryCarrier(models.Model):
         ondelete={'stallion_express': 'set default'}
     )
 
-    stallion_customer_number = fields.Char(string='Customer Number', required=True)
-    stallion_api_key = fields.Char(string='API Token / Key', required=True)
-    stallion_endpoint = fields.Selection([
-        ('https://sandbox.stallionexpress.ca/api/v4', 'Sandbox'),
-        ('https://ship.stallionexpress.ca/api/v4', 'Production')
-    ], string='API Endpoint', default='https://sandbox.stallionexpress.ca/api/v4')
-
-    stallion_default_service = fields.Char(string='Default Service Code')
+    stallion_api_token = fields.Char(string='Stallion API Token', required=True)
+    stallion_test_mode = fields.Boolean(string='Test Mode', default=True)
+    stallion_postage_type_id = fields.Integer(string='Postage Type ID')
 
     def stallion_express_rate_shipment(self, order):
-        if not self.stallion_customer_number or not self.stallion_api_key:
-            raise UserError("Please configure Stallion Express Customer Number and API Token.")
+        """Fetch real-time rates from Stallion Express (multiple options)"""
+        if not self.stallion_api_token:
+            raise UserError("Stallion Express API Token is not configured.")
 
-        shipper = order.warehouse_id.partner_id
-        recipient = order.partner_shipping_id
+        shipping_address = order.partner_shipping_id
+        company_address = order.company_id.partner_id or order.warehouse_id.partner_id
 
-        packages = []
-        for line in order.order_line.filtered(lambda l: l.product_id.type == 'product'):
-            weight = max(line.product_id.weight or 0.5, 0.1)
-            packages.append({
-                "weight": weight,
-                "length": 15,
-                "width": 15,
-                "height": 10,
-            })
+        if not shipping_address or not company_address:
+            raise UserError("Shipping or warehouse address is missing.")
 
-        payload = {
-            "origin_postal_code": (shipper.zip or "").replace(" ", ""),
-            "destination_postal_code": (recipient.zip or "").replace(" ", ""),
-            "destination_country": recipient.country_id.code or "CA",
-            "packages": packages or [{"weight": 1.0, "length": 15, "width": 15, "height": 10}],
+        # Calculate total weight
+        total_weight = sum(
+            (line.product_id.weight or 0.5) * line.product_uom_qty
+            for line in order.order_line if line.product_id.type == 'product'
+        ) or 0.5
+
+        # Build items
+        items = []
+        for line in order.order_line:
+            if line.product_id and line.product_id.type == 'product':
+                items.append({
+                    'description': line.product_id.name,
+                    'sku': line.product_id.default_code or '',
+                    'quantity': int(line.product_uom_qty),
+                    'value': line.price_unit,
+                    'currency': order.currency_id.name or 'CAD',
+                })
+
+        to_address = {
+            'name': shipping_address.name or '',
+            'company': shipping_address.parent_id.name if shipping_address.parent_id else '',
+            'address1': shipping_address.street or '',
+            'address2': shipping_address.street2 or '',
+            'city': shipping_address.city or '',
+            'province_code': shipping_address.state_id.code or '',
+            'postal_code': (shipping_address.zip or '').replace(' ', ''),
+            'country_code': shipping_address.country_id.code or 'CA',
+            'phone': shipping_address.phone or '',
+            'email': shipping_address.email or '',
+            'is_residential': not bool(shipping_address.is_company),
         }
 
+        payload = {
+            'to_address': to_address,
+            'is_return': False,
+            'weight_unit': 'kg',
+            'weight': total_weight,
+            'length': 12,
+            'width': 12,
+            'height': 12,
+            'size_unit': 'in',
+            'items': items,
+            'package_type': 'Parcel',
+            'postage_types': [],
+            'signature_confirmation': False,
+            'insured': True,
+        }
+
+        base_url = 'https://sandbox.stallionexpress.ca' if self.stallion_test_mode else 'https://ship.stallionexpress.ca'
+        api_url = f'{base_url}/api/v4/rates'
+
         headers = {
+            'Authorization': f'Bearer {self.stallion_api_token}',
             'Content-Type': 'application/json',
-            'X-Customer-Number': self.stallion_customer_number,
-            'Authorization': self.stallion_api_key,
         }
 
         try:
-            base = self.stallion_endpoint.rstrip('/')
+            _logger.info(f"Calling Stallion Rates: {api_url}")
+            response = requests.post(api_url, json=payload, headers=headers, timeout=25)
+            response.raise_for_status()
+            data = response.json()
 
-            # Try the most common endpoints in order
-            endpoints_to_try = [
-                f"{base}/shipments/rates",
-                f"{base}/rates",
-                f"{base}/quote",
-                f"{base}/shipments/quote",
-            ]
-
-            for url in endpoints_to_try:
-                _logger.info(f"Trying Stallion endpoint: {url}")
-                response = requests.post(url, headers=headers, json=payload, timeout=25)
-
-                if response.status_code == 200:
-                    data = response.json()
-                    _logger.info(f"Stallion success with {url}")
-                    break
-                elif response.status_code == 404:
-                    continue
-                else:
-                    response.raise_for_status()
-            else:
-                raise UserError(f"No valid rates endpoint found. Tried: {endpoints_to_try}")
-
-            # Parse rates
-            services = data.get('services', data.get('rates', data.get('data', [])))
             rates = []
-            for service in services:
+            for rate in data.get('rates', []):
                 rates.append({
                     'carrier': self.name,
-                    'service_name': service.get('name') or service.get('service_name') or service.get(
-                        'title') or 'Stallion Service',
-                    'price': float(service.get('total', 0) or service.get('price', 0) or service.get('cost', 0)),
+                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Express',
+                    'price': float(rate.get('total', 0)),
                     'currency': 'CAD',
-                    'service_code': service.get('code') or service.get('service_code'),
+                    'service_code': str(rate.get('postage_type_id')),
+                    'delivery_date': rate.get('delivery_days'),
                 })
 
             if not rates:
-                raise UserError("Stallion Express returned no shipping options for this address.")
+                raise UserError("No shipping rates returned from Stallion Express.")
 
             return rates
 
         except Exception as e:
-            _logger.error(f"Stallion API Error: {str(e)}")
-            raise UserError(f"Stallion Express Error: {str(e)}")
+            _logger.error(f"Stallion Express API Error: {str(e)}")
+            raise UserError(f"Stallion Express: {str(e)}")
 
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
