@@ -21,29 +21,43 @@ class DeliveryCarrier(models.Model):
 
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
-            raise UserError("Stallion Express API Token is not configured.")
+            raise UserError("Please configure your Stallion Express API Token.")
 
         shipping_address = order.partner_shipping_id
         if not shipping_address or not shipping_address.zip:
             raise UserError("Shipping address or postal code is missing.")
 
+        # Calculate weight
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
+        # Build items - ALWAYS send at least one item
         items = []
         for line in order.order_line:
             if line.product_id and line.product_id.type == 'product':
                 items.append({
                     'description': line.product_id.name or 'Product',
                     'sku': line.product_id.default_code or 'N/A',
-                    'quantity': int(line.product_uom_qty),
-                    'value': line.price_unit or 0.0,
+                    'quantity': max(int(line.product_uom_qty), 1),
+                    'value': line.price_unit or 1.0,
                     'currency': order.currency_id.name or 'CAD',
                     'country_of_origin': 'CA',
                     'hs_code': line.product_id.hs_code or '123456',
                 })
+
+        # Fallback: If no items (empty cart or only shipping products), send a default item
+        if not items:
+            items = [{
+                'description': 'Package',
+                'sku': 'PKG-001',
+                'quantity': 1,
+                'value': 10.0,
+                'currency': order.currency_id.name or 'CAD',
+                'country_of_origin': 'CA',
+                'hs_code': '123456',
+            }]
 
         to_address = {
             'name': shipping_address.name or '',
@@ -76,7 +90,7 @@ class DeliveryCarrier(models.Model):
             'region': 'ON',
         }
 
-        base_url = 'https://ship.stallionexpress.ca' if not self.stallion_test_mode else 'https://sandbox.stallion.ca'
+        base_url = 'https://ship.stallionexpress.ca'
         api_url = f'{base_url}/api/v4/rates'
 
         headers = {
@@ -85,21 +99,16 @@ class DeliveryCarrier(models.Model):
         }
 
         try:
-            _logger.info("=" * 100)
             _logger.info(f"Stallion Request URL: {api_url}")
-            _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
-
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Response Body:\n{response.text}")
+            _logger.info(f"Stallion Response: {response.text[:2000]}")
 
             if response.status_code != 200:
-                _logger.error(f"Stallion failed with status {response.status_code}: {response.text}")
-                raise UserError(f"Stallion Error ({response.status_code}): {response.text[:800]}")
+                raise UserError(f"Stallion Error ({response.status_code}): {response.text[:600]}")
 
             data = response.json()
-
             rates = []
             for rate in data.get('rates', []):
                 rates.append({
@@ -113,9 +122,8 @@ class DeliveryCarrier(models.Model):
             return rates
 
         except Exception as e:
-            _logger.error(f"Stallion Exception: {str(e)}")
+            _logger.error(f"Stallion Error: {str(e)}")
             raise UserError(f"Stallion Express Error: {str(e)}")
-
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
