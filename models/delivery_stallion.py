@@ -16,7 +16,8 @@ class DeliveryCarrier(models.Model):
     )
 
     stallion_api_token = fields.Char(string='Stallion API Token', required=True)
-    stallion_test_mode = fields.Boolean(string='Test Mode', default=False)  # Default to Production
+    stallion_test_mode = fields.Boolean(string='Test Mode', default=False)  # Production by default
+    stallion_postage_type_id = fields.Integer(string='Postage Type ID')
 
     def stallion_express_rate_shipment(self, order):
         if not self.stallion_api_token:
@@ -25,18 +26,28 @@ class DeliveryCarrier(models.Model):
         shipping_address = order.partner_shipping_id
         company_address = order.company_id.partner_id or order.warehouse_id.partner_id
 
+        if not shipping_address:
+            raise UserError("Shipping address is missing.")
+
+        # Calculate total weight
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        items = [{
-            'description': line.product_id.name or 'Product',
-            'sku': line.product_id.default_code or 'N/A',
-            'quantity': int(line.product_uom_qty),
-            'value': line.price_unit,
-            'currency': order.currency_id.name or 'CAD',
-        } for line in order.order_line if line.product_id and line.product_id.type == 'product']
+        # Build items
+        items = []
+        for line in order.order_line:
+            if line.product_id and line.product_id.type == 'product':
+                items.append({
+                    'description': line.product_id.name or 'Product',
+                    'sku': line.product_id.default_code or 'N/A',
+                    'quantity': int(line.product_uom_qty),
+                    'value': line.price_unit,
+                    'currency': order.currency_id.name or 'CAD',
+                    'country_of_origin': 'CA',
+                    'hs_code': '123456',
+                })
 
         to_address = {
             'name': shipping_address.name or '',
@@ -49,7 +60,7 @@ class DeliveryCarrier(models.Model):
             'country_code': shipping_address.country_id.code or 'CA',
             'phone': shipping_address.phone or '',
             'email': shipping_address.email or '',
-            'is_residential': True,
+            'is_residential': not bool(shipping_address.is_company),
         }
 
         payload = {
@@ -61,12 +72,12 @@ class DeliveryCarrier(models.Model):
             'width': 12,
             'height': 12,
             'size_unit': 'in',
-            'items': items or [{}],
+            'items': items,
             'package_type': 'Parcel',
             'postage_types': [],
             'signature_confirmation': False,
             'insured': True,
-            'region': 'ON',  # Added from your old code
+            'region': 'ON',
         }
 
         base_url = 'https://ship.stallionexpress.ca' if not self.stallion_test_mode else 'https://sandbox.stallion.ca'
@@ -85,7 +96,7 @@ class DeliveryCarrier(models.Model):
             response = requests.post(api_url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {response.status_code}")
-            _logger.info(f"Stallion Response Body:\n{response.text[:5000]}")  # Increased limit
+            _logger.info(f"Stallion Response Body:\n{response.text[:6000]}")
 
             response.raise_for_status()
             data = response.json()
@@ -94,18 +105,23 @@ class DeliveryCarrier(models.Model):
             for rate in data.get('rates', []):
                 rates.append({
                     'carrier': self.name,
-                    'service_name': rate.get('service_name') or rate.get('name') or 'Stallion Express',
-                    'price': float(rate.get('total', rate.get('price', 0))),
+                    'service_name': rate.get('service_name') or rate.get(
+                        'name') or f"Stallion {rate.get('postage_type_id')}",
+                    'price': float(rate.get('total', 0)),
                     'currency': 'CAD',
                     'service_code': str(rate.get('postage_type_id')),
+                    'delivery_date': rate.get('delivery_days'),
                 })
+
+            if not rates:
+                raise UserError("No rates returned from Stallion Express.")
 
             return rates
 
         except requests.exceptions.HTTPError as e:
             error_detail = response.text if 'response' in locals() else str(e)
-            _logger.error(f"Stallion 422 Error: {error_detail}")
-            raise UserError(f"Stallion Express Error (422): {error_detail[:600]}")
+            _logger.error(f"Stallion Error: {error_detail}")
+            raise UserError(f"Stallion Express Error ({response.status_code}): {error_detail[:700]}")
         except Exception as e:
             _logger.error(f"Stallion Error: {str(e)}")
             raise UserError(f"Stallion Express Error: {str(e)}")
