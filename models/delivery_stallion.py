@@ -136,10 +136,23 @@ class DeliveryCarrier(models.Model):
                     'last_delivery_days': delivery_days
                 })
 
-            return {
-                'success': True,
-                'price': float(chosen.get('total', 0)),
-                'currency': chosen.get('currency', 'CAD'),
+                # === ADD THE USER'S ADDITIONAL MARGIN ===
+                base_price = float(chosen.get('total', 0))
+                margin = self.margin or 0.0  # This is the "Additional Margin" field
+                final_price = base_price + margin
+
+                delivery_days = chosen.get('delivery_days', '')
+                if delivery_days:
+                    new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
+                    self.sudo().write({
+                        'name': new_name,
+                        'last_delivery_days': delivery_days
+                    })
+
+                return {
+                    'success': True,
+                    'price': final_price,  # ← now includes margin
+                    'currency': chosen.get('currency', 'CAD'),
             }
 
         except Exception as e:
