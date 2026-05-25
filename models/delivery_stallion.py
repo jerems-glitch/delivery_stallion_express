@@ -135,12 +135,21 @@ class DeliveryCarrier(models.Model):
                     'name': new_name,
                     'last_delivery_days': delivery_days
                 })
-
-                # === ADD THE USER'S ADDITIONAL MARGIN ===
+                # === ADD THE ADDITIONAL MARGIN (Fixed + Percentage support) ===
                 base_price = float(chosen.get('total', 0))
-                margin = self.margin or 0.0  # This is the "Additional Margin" field
-                final_price = base_price + margin
 
+                # Support both fixed amount and percentage margin
+                if self.margin:
+                    if self.margin_type == 'percentage':  # Odoo has this field
+                        margin_amount = base_price * (self.margin / 100.0)
+                    else:
+                        margin_amount = self.margin
+                else:
+                    margin_amount = 0.0
+
+                final_price = base_price + margin_amount
+
+                # Dynamic transit time in name
                 delivery_days = chosen.get('delivery_days', '')
                 if delivery_days:
                     new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
@@ -151,9 +160,9 @@ class DeliveryCarrier(models.Model):
 
                 return {
                     'success': True,
-                    'price': final_price,  # ← now includes margin
+                    'price': final_price,  # ← Now includes margin
                     'currency': chosen.get('currency', 'CAD'),
-            }
+                }
 
         except Exception as e:
             _logger.error(f"Stallion API Exception: {str(e)}")
