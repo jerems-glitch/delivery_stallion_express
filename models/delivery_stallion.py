@@ -45,8 +45,8 @@ class DeliveryCarrier(models.Model):
             height = getattr(pkg, 'height', 12) or 12
             size_unit = 'cm' if getattr(pkg, 'length_uom_id', False) and pkg.length_uom_id.name == 'cm' else 'in'
         else:
-            length = width = height = 12
-            size_unit = 'in'
+            length = width = height = 120
+            size_unit = 'mm'
 
         items = []
         for line in order.order_line:
