@@ -41,7 +41,7 @@ class DeliveryCarrier(models.Model):
         if self.default_package_type_id:
             pkg = self.default_package_type_id
             length = getattr(pkg, 'length', 12) or 12
-            width  = getattr(pkg, 'width', 12) or 12
+            width = getattr(pkg, 'width', 12) or 12
             height = getattr(pkg, 'height', 12) or 12
             size_unit = 'cm' if getattr(pkg, 'length_uom_id', False) and pkg.length_uom_id.name == 'cm' else 'in'
         else:
@@ -98,10 +98,13 @@ class DeliveryCarrier(models.Model):
         }
 
         url = 'https://ship.stallionexpress.ca/api/v4/rates'
-        headers = {'Authorization': f'Bearer {self.stallion_api_token}', 'Content-Type': 'application/json'}
+        headers = {
+            'Authorization': f'Bearer {self.stallion_api_token}',
+            'Content-Type': 'application/json',
+        }
 
         try:
-            _logger.info("="*100)
+            _logger.info("=" * 100)
             _logger.info(f"Stallion Request URL: {url}")
             _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
 
@@ -125,44 +128,24 @@ class DeliveryCarrier(models.Model):
                         break
 
             if not chosen:
-                return {'success': False, 'price': 0.0, 'error_message': f'No rate for {self.stallion_postage_type}'}
+                return {'success': False, 'price': 0.0,
+                        'error_message': f'No rate for {self.stallion_postage_type}'}
 
-            # === NICE BADGE-STYLE TRANSIT TIME IN NAME ===
+            # === ADD ADDITIONAL MARGIN ===
+            base_price = float(chosen.get('total', 0))
+            margin = self.margin or 0.0
+            final_price = base_price + margin
+
+            # Save transit time (no name change to avoid concurrency error)
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
-                new_name = f"Stallion - {self.stallion_postage_type} ⏳ {delivery_days} days"
-                self.sudo().write({
-                    'name': new_name,
-                    'last_delivery_days': delivery_days
-                })
-                # === ADD THE ADDITIONAL MARGIN (Fixed + Percentage support) ===
-                base_price = float(chosen.get('total', 0))
+                self.sudo().write({'last_delivery_days': delivery_days})
 
-                # Support both fixed amount and percentage margin
-                if self.margin:
-                    if self.margin_type == 'percentage':  # Odoo has this field
-                        margin_amount = base_price * (self.margin / 100.0)
-                    else:
-                        margin_amount = self.margin
-                else:
-                    margin_amount = 0.0
-
-                final_price = base_price + margin_amount
-
-                # Dynamic transit time in name
-                delivery_days = chosen.get('delivery_days', '')
-                if delivery_days:
-                    new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
-                    self.sudo().write({
-                        'name': new_name,
-                        'last_delivery_days': delivery_days
-                    })
-
-                return {
-                    'success': True,
-                    'price': final_price,  # ← Now includes margin
-                    'currency': chosen.get('currency', 'CAD'),
-                }
+            return {
+                'success': True,
+                'price': final_price,  # ← Margin is now included
+                'currency': chosen.get('currency', 'CAD'),
+            }
 
         except Exception as e:
             _logger.error(f"Stallion API Exception: {str(e)}")
