@@ -2,6 +2,7 @@ from odoo import models, fields
 import requests
 from odoo.exceptions import UserError
 import logging
+import json
 
 _logger = logging.getLogger(__name__)
 
@@ -19,11 +20,9 @@ class DeliveryCarrier(models.Model):
     stallion_postage_type = fields.Char(string='Stallion Postage Type')
     last_delivery_days = fields.Char(string='Last Transit Time', readonly=True)
 
-    # Package Type Support (Volume + Dimensional Weight)
     default_package_type_id = fields.Many2one(
         'stock.package.type',
-        string='Default Package Type',
-        help="Used for real dimensional weight calculation"
+        string='Default Package Type'
     )
 
     def stallion_express_rate_shipment(self, order):
@@ -34,13 +33,11 @@ class DeliveryCarrier(models.Model):
         if not shipping_address or not shipping_address.zip:
             raise UserError("Shipping address is incomplete.")
 
-        # === Weight & Volume Calculation ===
         total_weight = sum(
             (line.product_id.weight or 0.5) * line.product_uom_qty
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        # === Get dimensions from selected Package Type (safe access) ===
         if self.default_package_type_id:
             pkg = self.default_package_type_id
             length = getattr(pkg, 'length', 12) or 12
@@ -107,7 +104,15 @@ class DeliveryCarrier(models.Model):
         }
 
         try:
+            _logger.info("="*100)
+            _logger.info(f"Stallion Request URL: {url}")
+            _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
+
             resp = requests.post(url, json=payload, headers=headers, timeout=30)
+
+            _logger.info(f"Stallion Response Status: {resp.status_code}")
+            _logger.info(f"Stallion Full Response Body:\n{resp.text}")
+
             resp.raise_for_status()
             data = resp.json()
             rates = data.get('rates', [])
@@ -126,7 +131,6 @@ class DeliveryCarrier(models.Model):
                 return {'success': False, 'price': 0.0,
                         'error_message': f'No rate for {self.stallion_postage_type}'}
 
-            # Dynamic transit time
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
                 new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
@@ -142,6 +146,7 @@ class DeliveryCarrier(models.Model):
             }
 
         except Exception as e:
+            _logger.error(f"Stallion API Exception: {str(e)}")
             return {'success': False, 'price': 0.0, 'error_message': str(e)}
 
     def rate_shipment(self, order):
