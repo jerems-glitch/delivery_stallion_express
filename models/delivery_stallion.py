@@ -26,164 +26,42 @@ class DeliveryCarrier(models.Model):
     )
 
     def stallion_express_rate_shipment(self, order):
+        """Fast version - reads from bulk cached rates"""
         if not self.stallion_api_token:
             raise UserError("Stallion API Token is missing.")
 
-        shipping_address = order.partner_shipping_id
-        if not shipping_address or not shipping_address.zip:
-            raise UserError("Shipping address is incomplete.")
+        cached_rates = order._get_cached_stallion_rates()
+        if not cached_rates:
+            return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-        total_weight = sum(
-            (line.product_id.weight or 0.5) * line.product_uom_qty
-            for line in order.order_line if line.product_id.type == 'product'
-        ) or 0.5
+        # Find matching rate for this specific method
+        chosen = None
+        if self.stallion_postage_type:
+            for r in cached_rates:
+                if r.get('postage_type') == self.stallion_postage_type:
+                    chosen = r
+                    break
 
-        if self.default_package_type_id:
-            pkg = self.default_package_type_id
-            length = getattr(pkg, 'length', 12) or 12
-            width = getattr(pkg, 'width', 12) or 12
-            height = getattr(pkg, 'height', 12) or 12
-            size_unit = 'cm' if getattr(pkg, 'length_uom_id', False) and pkg.length_uom_id.name == 'cm' else 'in'
-        else:
-            length = width = height = 12
-            size_unit = 'in'
+        if not chosen:
+            return {'success': False, 'price': 0.0, 'error_message': f'No rate for {self.stallion_postage_type}'}
 
-        items = []
-        for line in order.order_line:
-            if line.product_id and line.product_id.type == 'product':
-                items.append({
-                    'description': line.product_id.name or 'Product',
-                    'sku': line.product_id.default_code or 'N/A',
-                    'quantity': max(int(line.product_uom_qty), 1),
-                    'value': line.price_unit or 1.0,
-                    'currency': order.currency_id.name or 'CAD',
-                    'country_of_origin': 'CA',
-                    'hs_code': line.product_id.hs_code or '123456',
-                })
+        # Add user's Additional Margin
+        base_price = float(chosen.get('total', 0))
+        margin = self.margin or 0.0
+        final_price = base_price + margin
 
-        if not items:
-            items = [{'description': 'Package', 'sku': 'PKG-001', 'quantity': 1,
-                      'value': 10.0, 'currency': order.currency_id.name or 'CAD',
-                      'country_of_origin': 'CA', 'hs_code': '123456'}]
+        # Save transit time
+        delivery_days = chosen.get('delivery_days', '')
+        if delivery_days:
+            self.sudo().write({'last_delivery_days': delivery_days})
 
-        to_address = {
-            'name': shipping_address.name or '',
-            'company': shipping_address.parent_id.name if shipping_address.parent_id else '',
-            'address1': shipping_address.street or '',
-            'address2': shipping_address.street2 or '',
-            'city': shipping_address.city or '',
-            'province_code': shipping_address.state_id.code or '',
-            'postal_code': (shipping_address.zip or '').replace(' ', ''),
-            'country_code': shipping_address.country_id.code or 'CA',
-            'phone': shipping_address.phone or '',
-            'email': shipping_address.email or '',
-            'is_residential': not bool(shipping_address.is_company),
+        return {
+            'success': True,
+            'price': final_price,
+            'currency': chosen.get('currency', 'CAD'),
         }
-
-        payload = {
-            'to_address': to_address,
-            'is_return': False,
-            'weight_unit': 'kg',
-            'weight': round(total_weight, 2),
-            'length': length,
-            'width': width,
-            'height': height,
-            'size_unit': size_unit,
-            'items': items,
-            'package_type': 'Parcel',
-            'postage_types': [self.stallion_postage_type] if self.stallion_postage_type else [],
-            'signature_confirmation': False,
-            'insured': True,
-            'region': 'ON',
-        }
-
-        url = 'https://ship.stallionexpress.ca/api/v4/rates'
-        headers = {
-            'Authorization': f'Bearer {self.stallion_api_token}',
-            'Content-Type': 'application/json',
-        }
-
-        try:
-            _logger.info("=" * 100)
-            _logger.info(f"Stallion Request URL: {url}")
-            _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
-
-            resp = requests.post(url, json=payload, headers=headers, timeout=30)
-
-            _logger.info(f"Stallion Response Status: {resp.status_code}")
-            _logger.info(f"Stallion Full Response Body:\n{resp.text[:4000]}")
-
-            resp.raise_for_status()
-            data = resp.json()
-            rates = data.get('rates', [])
-
-            if not rates:
-                return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
-
-            chosen = None
-            if self.stallion_postage_type:
-                for r in rates:
-                    if r.get('postage_type') == self.stallion_postage_type:
-                        chosen = r
-                        break
-
-            if not chosen:
-                return {'success': False, 'price': 0.0,
-                        'error_message': f'No rate for {self.stallion_postage_type}'}
-
-            # === ADD ADDITIONAL MARGIN ===
-            base_price = float(chosen.get('total', 0))
-            margin = self.margin or 0.0
-            final_price = base_price + margin
-
-            # Save transit time (no name change to avoid concurrency error)
-            delivery_days = chosen.get('delivery_days', '')
-            if delivery_days:
-                self.sudo().write({'last_delivery_days': delivery_days})
-
-            return {
-                'success': True,
-                'price': final_price,  # ← Margin is now included
-                'currency': chosen.get('currency', 'CAD'),
-            }
-
-        except Exception as e:
-            _logger.error(f"Stallion API Exception: {str(e)}")
-            return {'success': False, 'price': 0.0, 'error_message': str(e)}
 
     def rate_shipment(self, order):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
-
-    def action_sync_stallion_shipping_methods(self):
-        self.ensure_one()
-        if not self.stallion_api_token:
-            raise UserError("API Token is required.")
-
-        base_url = 'https://ship.stallionexpress.ca'
-        headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
-
-        t = requests.get(f'{base_url}/api/v4/postage-types', headers=headers, timeout=30)
-        t.raise_for_status()
-        postage_types = t.json().get('postage_types', [])
-
-        created = 0
-        for ptype in postage_types:
-            name = f"Stallion - {ptype}"
-            if not self.search([('name', '=', name)], limit=1):
-                self.create({
-                    'name': name,
-                    'delivery_type': 'stallion_express',
-                    'product_id': self.product_id.id,
-                    'stallion_api_token': self.stallion_api_token,
-                    'stallion_postage_type': ptype,
-                    'active': True,
-                })
-                created += 1
-
-        return {
-            'type': 'ir.actions.client',
-            'tag': 'display_notification',
-            'params': {'title': 'Success', 'message': f"Synced {created} methods", 'type': 'success'}
-        }
