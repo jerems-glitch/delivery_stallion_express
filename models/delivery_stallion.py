@@ -26,7 +26,7 @@ class DeliveryCarrier(models.Model):
     )
 
     def stallion_express_rate_shipment(self, order):
-        """Fast version - reads from bulk cached rates"""
+        """Fast version - uses cached bulk rates from sale_order.py"""
         if not self.stallion_api_token:
             raise UserError("Stallion API Token is missing.")
 
@@ -34,7 +34,7 @@ class DeliveryCarrier(models.Model):
         if not cached_rates:
             return {'success': False, 'price': 0.0, 'error_message': 'No rates available'}
 
-        # Find matching rate for this specific method
+        # Find the rate for this specific postage type
         chosen = None
         if self.stallion_postage_type:
             for r in cached_rates:
@@ -45,7 +45,7 @@ class DeliveryCarrier(models.Model):
         if not chosen:
             return {'success': False, 'price': 0.0, 'error_message': f'No rate for {self.stallion_postage_type}'}
 
-        # Add user's Additional Margin
+        # Add Additional Margin
         base_price = float(chosen.get('total', 0))
         margin = self.margin or 0.0
         final_price = base_price + margin
@@ -65,3 +65,40 @@ class DeliveryCarrier(models.Model):
         if self.delivery_type == 'stallion_express':
             return self.stallion_express_rate_shipment(order)
         return super().rate_shipment(order)
+
+    def action_sync_stallion_shipping_methods(self):
+        """Sync all postage types from Stallion"""
+        self.ensure_one()
+        if not self.stallion_api_token:
+            raise UserError("API Token is required.")
+
+        base_url = 'https://ship.stallionexpress.ca'
+        headers = {'Authorization': f'Bearer {self.stallion_api_token}'}
+
+        resp = requests.get(f'{base_url}/api/v4/postage-types', headers=headers, timeout=30)
+        resp.raise_for_status()
+        postage_types = resp.json().get('postage_types', [])
+
+        created = 0
+        for ptype in postage_types:
+            name = f"Stallion - {ptype}"
+            if not self.search([('name', '=', name)], limit=1):
+                self.create({
+                    'name': name,
+                    'delivery_type': 'stallion_express',
+                    'product_id': self.product_id.id,
+                    'stallion_api_token': self.stallion_api_token,
+                    'stallion_postage_type': ptype,
+                    'active': True,
+                })
+                created += 1
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Success',
+                'message': f"Synced {created} shipping methods",
+                'type': 'success'
+            }
+        }
