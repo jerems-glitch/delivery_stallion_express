@@ -38,13 +38,11 @@ class DeliveryCarrier(models.Model):
             for line in order.order_line if line.product_id.type == 'product'
         ) or 0.5
 
-        # === Package Dimensions (safe handling) ===
         if self.default_package_type_id:
             pkg = self.default_package_type_id
             length = getattr(pkg, 'length', 12) or 12
-            width = getattr(pkg, 'width', 12) or 12
+            width  = getattr(pkg, 'width', 12) or 12
             height = getattr(pkg, 'height', 12) or 12
-            # Force only valid units for Stallion
             size_unit = 'cm' if getattr(pkg, 'length_uom_id', False) and pkg.length_uom_id.name == 'cm' else 'in'
         else:
             length = width = height = 12
@@ -90,7 +88,7 @@ class DeliveryCarrier(models.Model):
             'length': length,
             'width': width,
             'height': height,
-            'size_unit': size_unit,  # Now always "in" or "cm"
+            'size_unit': size_unit,
             'items': items,
             'package_type': 'Parcel',
             'postage_types': [self.stallion_postage_type] if self.stallion_postage_type else [],
@@ -100,20 +98,17 @@ class DeliveryCarrier(models.Model):
         }
 
         url = 'https://ship.stallionexpress.ca/api/v4/rates'
-        headers = {
-            'Authorization': f'Bearer {self.stallion_api_token}',
-            'Content-Type': 'application/json',
-        }
+        headers = {'Authorization': f'Bearer {self.stallion_api_token}', 'Content-Type': 'application/json'}
 
         try:
-            _logger.info("=" * 100)
+            _logger.info("="*100)
             _logger.info(f"Stallion Request URL: {url}")
             _logger.info(f"Stallion Request Payload:\n{json.dumps(payload, indent=2)}")
 
             resp = requests.post(url, json=payload, headers=headers, timeout=30)
 
             _logger.info(f"Stallion Response Status: {resp.status_code}")
-            _logger.info(f"Stallion Full Response Body:\n{resp.text[:4000]}")  # full response
+            _logger.info(f"Stallion Full Response Body:\n{resp.text[:4000]}")
 
             resp.raise_for_status()
             data = resp.json()
@@ -130,12 +125,12 @@ class DeliveryCarrier(models.Model):
                         break
 
             if not chosen:
-                return {'success': False, 'price': 0.0,
-                        'error_message': f'No rate for {self.stallion_postage_type}'}
+                return {'success': False, 'price': 0.0, 'error_message': f'No rate for {self.stallion_postage_type}'}
 
+            # === NICE BADGE-STYLE TRANSIT TIME IN NAME ===
             delivery_days = chosen.get('delivery_days', '')
             if delivery_days:
-                new_name = f"Stallion - {self.stallion_postage_type} ({delivery_days} days)"
+                new_name = f"Stallion - {self.stallion_postage_type} ⏳ {delivery_days} days"
                 self.sudo().write({
                     'name': new_name,
                     'last_delivery_days': delivery_days
